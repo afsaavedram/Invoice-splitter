@@ -42,7 +42,7 @@ _MAX_SHEET_LEN = 31  # Límite Excel 31 caracteres
 def sanitize_sheet_name(name: str) -> str:
     """
     Normaliza un nombre de hoja Excel:
-    - Elimina caracteres inválidos (: \ / ? * [ ])
+    - Elimina caracteres inválidos (: / ? * [ ], etc.)
     - Recorta a 31 caracteres
     - Evita vacío
     """
