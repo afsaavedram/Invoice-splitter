@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: invoice-splitter
+Version: 0.1.0
+Summary: GUI app to split invoices by vendor rules and append to named Excel tables.
+Author: Andres Saavedra
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: openpyxl>=3.1.2
+Requires-Dist: ttkbootstrap>=1.10.1
+Requires-Dist: pydantic>=2.6.0
+Requires-Dist: Babel>=2.14.0
+Requires-Dist: python-dotenv>=1.0.1
+Provides-Extra: dev
+Requires-Dist: ruff>=0.6.0; extra == "dev"
+Requires-Dist: black>=24.0.0; extra == "dev"
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0.0; extra == "dev"

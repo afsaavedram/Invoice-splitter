@@ -1,0 +1,19 @@
+# Python / venv
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ruff_cache/
+
+# Logs / backups
+*.log
+backups/
+
+# Env
+.env
+
+# OS / editor
+.DS_Store
+.vscode/

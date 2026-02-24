@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invoice-splitter"
+version = "0.1.0"
+description = "GUI app to split invoices by vendor rules and append to named Excel tables."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Andres Saavedra" }]
+dependencies = [
+  "openpyxl>=3.1.2",
+  "ttkbootstrap>=1.10.1",
+  "pydantic>=2.6.0",
+  "Babel>=2.14.0",
+  "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6.0",
+  "black>=24.0.0",
+  "pytest>=8.0.0",
+  "pytest-cov>=5.0.0",
+]
+
+[project.scripts]
+invoice-splitter = "invoice_splitter.app:main"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+fix = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

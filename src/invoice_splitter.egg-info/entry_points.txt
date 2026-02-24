@@ -1,0 +1,2 @@
+[console_scripts]
+invoice-splitter = invoice_splitter.app:main
