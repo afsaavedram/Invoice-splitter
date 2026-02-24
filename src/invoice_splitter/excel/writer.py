@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Tuple
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.cell import range_boundaries
+from openpyxl.worksheet.table import Table
 
 logger = logging.getLogger("invoice_splitter")
 
@@ -28,6 +29,95 @@ class TableInfo:
 
 class ExcelWriteError(RuntimeError):
     """Errores controlados al escribir Excel (archivo bloqueado, tabla no encontrada, etc.)."""
+
+
+# -----------------------
+# Excel sheet naming helpers (31 chars + invalid chars)
+# -----------------------
+
+_INVALID_SHEET_CHARS = r"[:\\/?*\[\]]"  # Excel no permite : \ / ? * [ ]
+_MAX_SHEET_LEN = 31  # Límite Excel 31 caracteres
+
+
+def sanitize_sheet_name(name: str) -> str:
+    """
+    Normaliza un nombre de hoja Excel:
+    - Elimina caracteres inválidos (: \ / ? * [ ])
+    - Recorta a 31 caracteres
+    - Evita vacío
+    """
+    import re
+
+    s = (name or "").strip()
+    s = re.sub(_INVALID_SHEET_CHARS, "", s)
+    if not s:
+        s = "Sheet"
+    s = s[:_MAX_SHEET_LEN]
+    return s
+
+
+def unique_sheet_name(wb, base: str) -> str:
+    """
+    Asegura unicidad del nombre de hoja. Si existe, usa sufijos _2, _3, ...
+    Manteniendo longitud <= 31.
+    """
+    base = sanitize_sheet_name(base)
+    if base not in wb.sheetnames:
+        return base
+
+    n = 2
+    while True:
+        suffix = f"_{n}"
+        max_base = _MAX_SHEET_LEN - len(suffix)
+        candidate = (base[:max_base] + suffix)[:_MAX_SHEET_LEN]
+        if candidate not in wb.sheetnames:
+            return candidate
+        n += 1
+
+
+# -----------------------
+# Table schemas (headers) for auto-creation
+# -----------------------
+
+BASE_HEADERS = [
+    "Date",
+    "Bill number",
+    "ID",
+    "Vendor",
+    "Service/ concept",
+    "CC",
+    "GL account",
+    "Subtotal assigned by CC",
+    "% IVA",
+    "IVA assigned by CC",
+    "Total assigned by CC",
+]  # Coinciden con lo que ya escribe el writer y la UI [1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
+
+EXTRA_HEADERS_BY_TABLE = {
+    "Cirion_table": [
+        "Bandwidth (MBPS)"
+    ],  # [1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
+    "Claro_siptrunk_table": [
+        "Bandwidth (MBPS)",
+        "Troncal SIP (channels)",
+    ],  # [6](https://stackoverflow.com/questions/63182578/renaming-excel-sheets-name-exceeds-31-characters-error)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
+    "Claro_SBC_table": [
+        "Siptrunk (MBPS)",
+        "Licences (Quantity)",
+        "Siptrunk price",
+        "Licences price",
+    ],  # [6](https://stackoverflow.com/questions/63182578/renaming-excel-sheets-name-exceeds-31-characters-error)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
+    "Movistar_table": [
+        "Phone lines quantity"
+    ],  # [6](https://stackoverflow.com/questions/63182578/renaming-excel-sheets-name-exceeds-31-characters-error)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
+    "Claro_mobile_table": [
+        "Phone lines quantity"
+    ],  # [6](https://stackoverflow.com/questions/63182578/renaming-excel-sheets-name-exceeds-31-characters-error)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
+}
+
+
+def get_table_headers(table_name: str) -> list[str]:
+    return BASE_HEADERS + EXTRA_HEADERS_BY_TABLE.get(table_name, [])
 
 
 # -----------------------
@@ -104,17 +194,17 @@ def open_workbook_safe(excel_path: Path):
 
 
 def find_table(wb, table_name: str) -> Tuple[Any, TableInfo]:
-    """Busca una Excel Table por nombre a través de todas las hojas."""
+    """Busca una Excel Table por nombre a través de todas las hojas.
+    Si no existe, la crea (sheet==table por default).
+    """
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         if table_name in ws.tables:
             table = ws.tables[table_name]
             min_col, min_row, max_col, max_row = range_boundaries(table.ref)
-
             headers = []
             for c in range(min_col, max_col + 1):
                 headers.append(ws.cell(row=min_row, column=c).value)
-
             return ws, TableInfo(
                 sheet_name=sheet_name,
                 table_name=table_name,
@@ -125,7 +215,67 @@ def find_table(wb, table_name: str) -> Tuple[Any, TableInfo]:
                 headers=headers,
             )
 
-    raise ExcelWriteError(f"No se encontró la tabla '{table_name}' en el archivo.")
+    # Si no se encontró, crear hoja + tabla automáticamente (Fase 1)
+    ws, info = ensure_table_exists(wb, table_name, sheet_name=table_name)
+    logger.info("TABLA CREADA AUTOMATICAMENTE tabla=%s hoja=%s", table_name, info.sheet_name)
+    return ws, info
+
+
+def ensure_table_exists(
+    wb, table_name: str, sheet_name: str | None = None
+) -> tuple[Any, TableInfo]:
+    """
+    Si la tabla no existe:
+    - Crea hoja (default sheet == table)
+    - Escribe headers en fila 1
+    - Crea Excel Table (ListObject) con ref A1:<lastcol>2 (Opción A)
+      (fila 2 queda vacía sin valores; luego se llena en el primer append)
+    """
+    headers = get_table_headers(table_name)
+
+    # Default: sheet == table (como acordamos)
+    sheet_base = sheet_name or table_name
+    sheet_base = sanitize_sheet_name(sheet_base)
+    sheet_final = unique_sheet_name(wb, sheet_base)
+
+    # Crear hoja si no existe (o usar existente si ya está)
+    if sheet_final in wb.sheetnames:
+        ws = wb[sheet_final]
+    else:
+        ws = wb.create_sheet(
+            sheet_final
+        )  # openpyxl create_sheet [3](https://www.splitmyinvoice.com/)
+
+    # Escribir headers en fila 1 si está vacía (o si no hay nada)
+    # (si el usuario ya creó una hoja con algo, esto no borra nada; solo escribe si A1 está vacío)
+    if ws.cell(row=1, column=1).value is None:
+        for idx, h in enumerate(headers, start=1):
+            ws.cell(row=1, column=idx, value=h)
+
+    # Crear la tabla con ref A1:<lastcol>2 (Opción A)
+    from openpyxl.utils import get_column_letter
+
+    last_col_letter = get_column_letter(len(headers))
+    ref = f"A1:{last_col_letter}2"  # header + 1 fila vacía (sin dummy data)
+    table = Table(
+        displayName=table_name, ref=ref
+    )  # openpyxl Table [2](https://github.com/dotKz/api-mega-list)[3](https://www.splitmyinvoice.com/)
+    ws.add_table(
+        table
+    )  # add_table [2](https://github.com/dotKz/api-mega-list)[3](https://www.splitmyinvoice.com/)
+
+    # Construir TableInfo consistente con tu estructura
+    min_col, min_row, max_col, max_row = range_boundaries(ref)
+    info = TableInfo(
+        sheet_name=ws.title,
+        table_name=table_name,
+        min_col=min_col,
+        min_row=min_row,
+        max_col=max_col,
+        max_row=max_row,
+        headers=headers,
+    )
+    return ws, info
 
 
 def _header_to_col_index(info: TableInfo) -> Dict[str, int]:
@@ -218,18 +368,52 @@ def delete_duplicates_in_table(ws, info: TableInfo, vendor_id: int, bill_number:
     return deleted
 
 
+def _is_row_empty(ws, row: int, min_col: int, max_col: int) -> bool:
+    for col in range(min_col, max_col + 1):
+        if ws.cell(row=row, column=col).value not in (None, ""):
+            return False
+    return True
+
+
 def append_rows_to_table(ws, info: TableInfo, rows: List[Dict[str, Any]]) -> None:
-    """Inserta filas al final de la tabla, copia estilos de la última fila y expande table.ref."""
+    """Inserta filas al final de la tabla y expande table.ref.
+    - Si la tabla recién se creó con ref ...:2 (fila 2 vacía), la primera inserción se escribe en fila 2.
+    """
     col_map = _header_to_col_index(info)
 
-    last_data_row = info.max_row
-    style_source_row = info.max_row if info.max_row > info.min_row else info.min_row
+    # Determinar la primera fila de datos dentro de la tabla (normalmente row 2)
+    first_data_row = info.min_row + 1
+
+    # Si la tabla fue creada con ref hasta row 2, y row 2 está vacía, empezamos ahí
+    if info.max_row >= first_data_row and _is_row_empty(
+        ws, first_data_row, info.min_col, info.max_col
+    ):
+        insert_row = first_data_row
+        last_data_row = first_data_row - 1  # todavía no hay data real
+    else:
+        insert_row = info.max_row + 1
+        last_data_row = info.max_row
+
+    # Para tablas existentes con estilos, intentamos copiar estilo de la última fila de datos
+    # Para tablas nuevas (sin estilo), simplemente no copiamos.
+    def has_any_style(r: int) -> bool:
+        for c in range(info.min_col, info.max_col + 1):
+            if ws.cell(row=r, column=c).has_style:
+                return True
+        return False
+
+    style_source_row = (
+        last_data_row if last_data_row >= first_data_row and has_any_style(last_data_row) else None
+    )
 
     for row_values in rows:
-        new_row = last_data_row + 1
+        new_row = insert_row
 
-        _copy_row_style(ws, style_source_row, new_row, info.min_col, info.max_col)
+        # copiar estilo solo si hay fuente válida (tablas existentes)
+        if style_source_row is not None:
+            _copy_row_style(ws, style_source_row, new_row, info.min_col, info.max_col)
 
+        # escribir valores
         for header, value in row_values.items():
             if header not in col_map:
                 raise ExcelWriteError(
@@ -238,13 +422,17 @@ def append_rows_to_table(ws, info: TableInfo, rows: List[Dict[str, Any]]) -> Non
                 )
             ws.cell(row=new_row, column=col_map[header], value=value)
 
+        # formatos (sí importa consistencia)
         _set_cell_formats(ws, new_row, col_map)
 
+        # avanzar punteros
         last_data_row = new_row
-        style_source_row = new_row
+        style_source_row = new_row if has_any_style(new_row) else style_source_row
+        insert_row = new_row + 1
 
+    # actualizar ref de la tabla (expandir hasta last_data_row)
     start_cell = f"{get_column_letter(info.min_col)}{info.min_row}"
-    end_cell = f"{get_column_letter(info.max_col)}{last_data_row}"
+    end_cell = f"{get_column_letter(info.max_col)}{last_data_row if last_data_row >= first_data_row else first_data_row}"
     ws.tables[info.table_name].ref = f"{start_cell}:{end_cell}"
 
 

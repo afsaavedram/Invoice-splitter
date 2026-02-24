@@ -17,3 +17,6 @@ backups/
 # OS / editor
 .DS_Store
 .vscode/
+
+# Arbol
+Arbol.txt
