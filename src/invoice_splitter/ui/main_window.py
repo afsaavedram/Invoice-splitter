@@ -4,10 +4,13 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Dict, List, Optional, Any
 
+from click import Path
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import END, LEFT, W, X
 from tkinter import messagebox
 from tkinter.ttk import Treeview
+from tkinter import filedialog
+from pathlib import Path as PathlibPath
 
 from invoice_splitter.config import get_settings
 from invoice_splitter.excel.vendors import Vendor, load_vendors_from_table
@@ -17,6 +20,7 @@ from invoice_splitter.rules.registry import build_lines
 from invoice_splitter.ui.split_editor import SplitEditorDialog
 from invoice_splitter.utils.dates import UI_DATE_FORMAT, parse_ui_date, today
 from invoice_splitter.utils.money import normalize_bill_number, parse_decimal_user_input, parse_iva
+from invoice_splitter.config import get_settings, set_excel_path_user_config
 
 
 # -----------------------------
@@ -90,16 +94,41 @@ class MainWindow(ttk.Window):
         self.geometry("1060x760")
         self.minsize(980, 620)
 
-        self.settings = get_settings()
+        # --- 1) Asegurar excel_path (file picker si no está configurado) ---
+        try:
+            self.settings = get_settings()
+        except (ValueError, FileNotFoundError) as e:
+            # Pedir al usuario el Excel (SharePoint sincronizado aparece como ruta local)
+            path = filedialog.askopenfilename(
+                title="Selecciona el archivo Excel de Invoice registers",
+                filetypes=[("Excel files", "*.xlsx *.xlsm")],
+            )
+            if not path:
+                messagebox.showerror("Configuración requerida", str(e))
+                self.destroy()
+                return
+
+            set_excel_path_user_config(PathlibPath(path))
+            # Reintentar
+            try:
+                self.settings = get_settings()
+            except Exception as e2:
+                messagebox.showerror("Error de configuración", str(e2))
+                self.destroy()
+                return
+
         self.excel_path = self.settings.excel_path
         self.backup_dir = self.settings.excel_path.parent / "invoice_splitter_backups"
         self.session_backup_path = None
+
+        # --- 2) Cargar vendors desde Vendors_table ya con excel_path válido ---
 
         self.vendors: List[Vendor] = load_vendors_from_table(
             excel_path=str(self.excel_path),
             sheet_name=self.settings.vendors_sheet,
             table_name=self.settings.vendors_table,
         )
+
         self.vendor_by_name: Dict[str, Vendor] = {v.vendor_name: v for v in self.vendors}
 
         # Base vars
