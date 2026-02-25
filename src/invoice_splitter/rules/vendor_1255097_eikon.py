@@ -7,6 +7,13 @@ from invoice_splitter.models import InvoiceInput, LineItem
 from invoice_splitter.rules.common import calc_iva_and_total, q2, validate_and_compute_allocations
 
 
+VENDOR_ID = 1255097
+
+
+def build_lines_for_vendor(invoice: InvoiceInput) -> List[LineItem]:
+    return build_lines_for_eikon(invoice)
+
+
 EIKON_TABLE = "Eikon_table"
 GL_DEFAULT = 7980100000
 

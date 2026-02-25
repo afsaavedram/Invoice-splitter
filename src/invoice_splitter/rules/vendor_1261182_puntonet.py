@@ -12,6 +12,13 @@ DEFAULT_CC = 1100036
 DEFAULT_GL = 7418000000
 
 
+VENDOR_ID = 1261182
+
+
+def build_lines_for_vendor(invoice: InvoiceInput) -> List[LineItem]:
+    return build_lines_for_puntonet(invoice)
+
+
 def build_lines_for_puntonet(invoice: InvoiceInput) -> List[LineItem]:
     """
     PUNTONET (vendor_id=1261182) -> Puntonet_table

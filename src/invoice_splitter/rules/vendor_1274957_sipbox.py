@@ -13,6 +13,12 @@ DEFAULT_CONCEPT = "Lenovo ThinkSmartHub + Stem speaker + POE switch"
 DEFAULT_CC = 7475036
 DEFAULT_GL = 7648100000
 
+VENDOR_ID = 1274957
+
+
+def build_lines_for_vendor(invoice: InvoiceInput) -> List[LineItem]:
+    return build_lines_for_sipbox(invoice)
+
 
 def build_lines_for_sipbox(invoice: InvoiceInput) -> List[LineItem]:
     """

@@ -21,6 +21,13 @@ PCT2 = Decimal("0.40")
 DEFAULT_BANDWIDTH = 40  # MBPS
 
 
+VENDOR_ID = 1254926
+
+
+def build_lines_for_vendor(invoice: InvoiceInput) -> List[LineItem]:
+    return build_lines_for_cirion(invoice)
+
+
 def build_lines_for_cirion(invoice: InvoiceInput) -> List[LineItem]:
     """
     CIRION (vendor_id=1254926) -> Cirion_table

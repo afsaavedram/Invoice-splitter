@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import List, Optional
 
 import ttkbootstrap as ttk
@@ -300,45 +300,137 @@ class SplitEditorDialog(ttk.Toplevel):
                 r["percent_entry"].configure(state="disabled")
                 r["amount_entry"].configure(state="normal")
 
-    def _compute_sum_status(self) -> tuple[str, str]:
+    def _compute_sum_status(self) -> tuple[str, str, Decimal | None]:
         """
         Calcula estado de suma/diferencia aunque falten CC/GL.
-        Para filas vacías:
-          - percent vacío -> 0 (si es única fila -> 100)
-          - amount vacío -> 0 (si es única fila -> subtotal)
+        En modo percent:
+        - siempre muestra Σ% y % faltante (100 - Σ%)
+        En modo amount:
+        - no muestra Σ%
         """
         mode = self.mode_var.get()
         single = len(self.rows) == 1
 
+        # ---------- 1) Construir allocs "en vivo" (tolerante) ----------
         allocs: List[Allocation] = []
+
+        # Para mostrar Σ% incluso cuando haya error
+        sum_pct = Decimal("0")
+        missing_pct = Decimal("0")
+
         for r in self.rows:
             concept = r["concept_var"].get().strip() or self.default_concept
 
             if mode == "percent":
                 pct_raw = r["percent_var"].get().strip()
+
+                # Si solo hay una fila y está vacío, asumimos 100
                 if single and pct_raw == "":
                     pct_raw = "100"
+
                 pct_clean = pct_raw.replace("%", "").strip().replace(",", ".")
-                pct = Decimal(pct_clean) if pct_clean else Decimal("0")
+
+                # Inputs incompletos durante tipeo -> 0
+                if pct_clean in {"", ".", "-", "+", "-.", "+."}:
+                    pct = Decimal("0")
+                else:
+                    # permitir ".5" / "-.5"
+                    if pct_clean.startswith("."):
+                        pct_clean = "0" + pct_clean
+                    elif pct_clean.startswith("-."):
+                        pct_clean = pct_clean.replace("-.", "-0.", 1)
+                    elif pct_clean.startswith("+."):
+                        pct_clean = pct_clean.replace("+.", "+0.", 1)
+
+                    try:
+                        pct = Decimal(pct_clean)
+                    except (InvalidOperation, ValueError):
+                        pct = Decimal("0")
+
+                sum_pct += pct
                 allocs.append(Allocation(concept=concept, cc=0, gl_account=0, percent=pct))
+
             else:
                 amt_raw = r["amount_var"].get().strip()
+
                 if single and amt_raw == "":
                     amt = self.subtotal
                 else:
-                    amt = parse_decimal_user_input(amt_raw or "0", field_name="Valor de línea")
+                    # tolerante al tipeo: "", ".", "-." -> 0
+                    s = (amt_raw or "").strip()
+                    if s in {"", ".", "-", "+", "-.", "+."}:
+                        amt = Decimal("0")
+                    else:
+                        # permitir ".5" / "-.5"
+                        if s.startswith("."):
+                            s = "0" + s
+                        elif s.startswith("-."):
+                            s = s.replace("-.", "-0.", 1)
+                        elif s.startswith("+."):
+                            s = s.replace("+.", "+0.", 1)
+                        amt = parse_decimal_user_input(s, field_name="Valor de línea")
+
                 allocs.append(Allocation(concept=concept, cc=0, gl_account=0, amount=amt))
 
+        # ---------- 2) Σ% y faltante (solo en modo percent) ----------
+        if mode == "percent":
+            sum_pct = q2(sum_pct)
+            missing_pct = q2(Decimal("100") - sum_pct)
+
+            pct_info = f" | Σ%: {sum_pct:.2f}% | % faltante: {missing_pct:.2f}%"
+        else:
+            pct_info = ""
+
+        # ---------- 3) Validación / estado vs subtotal ----------
         try:
-            pairs = validate_and_compute_allocations(self.subtotal, mode, allocs)
-            total = q2(sum(amt for _a, amt in pairs))
+            if mode == "percent":
+                # En percent sí usamos el validador para calcular montos por %
+                pairs = validate_and_compute_allocations(
+                    self.subtotal, mode, allocs
+                )  # [1](https://exceladept.com/invalid-names-when-opening-a-workbook-in-excel/)
+                total = q2(sum(amt for _a, amt in pairs))
+                diff = q2(self.subtotal - total)
+
+                return (
+                    f"Suma líneas: {total} | Diferencia vs subtotal: {diff} (ajuste ±0.01 si aplica){pct_info}",
+                    "success",
+                    missing_pct,
+                )
+
+            # -------------------------
+            # MODO AMOUNT (VALOR): NO usar validate_and_compute_allocations
+            # porque lanza excepción si diff > 0.01 y no deja llegar al "danger". [1](https://exceladept.com/invalid-names-when-opening-a-workbook-in-excel/)
+            # -------------------------
+            total = q2(sum((a.amount or Decimal("0")) for a in allocs))
             diff = q2(self.subtotal - total)
-            return (
-                f"Suma líneas: {total} | Diferencia vs subtotal: {diff} (ajuste aplicado de 0.01 de ser necesario)",
-                "success",
+
+            tol = Decimal("0.01")
+            subtotal = self.subtotal
+
+            # Exceso:
+            # - subtotal >= 0: total > subtotal + tol
+            # - subtotal < 0 : total < subtotal - tol (más negativo)
+            exceeds = (subtotal >= 0 and total > (subtotal + tol)) or (
+                subtotal < 0 and total < (subtotal - tol)
             )
+
+            if exceeds:
+                style = "danger"  # 🔴 excede el subtotal
+            elif diff == Decimal("0"):
+                style = "success"  # 🟢 cuadra exacto
+            else:
+                style = "warning"  # 🟡 falta algo o pequeña diferencia
+
+            return (
+                f"Suma líneas: {total} | Diferencia vs subtotal: {diff} (ajuste ±0.01 si aplica)",
+                style,
+                None,
+            )
+
         except Exception as e:
-            return (f"⚠️ Suma/porcentajes inválidos: {e}", "warning")
+            if mode == "percent":
+                return (f"⚠️ Suma/porcentajes inválidos: {e}{pct_info}", "warning", missing_pct)
+            return (f"⚠️ Suma/valores inválidos: {e}", "warning", None)
 
     def _compute_fields_status(self) -> tuple[str, str]:
         missing = 0
@@ -354,7 +446,20 @@ class SplitEditorDialog(ttk.Toplevel):
         )
 
     def _recalc_status(self) -> None:
-        msg_sum, style_sum = self._compute_sum_status()
+        msg_sum, _style_sum, missing_pct = self._compute_sum_status()
+
+        # Color por % faltante (solo aplica en modo percent)
+        if missing_pct is None:
+            style_sum = _style_sum
+        else:
+            # missing_pct = 100 - sum_pct
+            if missing_pct == Decimal("0"):
+                style_sum = "success"  # 🟢 exacto 100%
+            elif missing_pct > Decimal("0"):
+                style_sum = "warning"  # 🟡 falta %
+            else:
+                style_sum = "danger"  # 🔴 excede 100%
+
         self.sum_status.configure(text=msg_sum, bootstyle=style_sum)
 
         msg_fields, style_fields = self._compute_fields_status()
@@ -409,3 +514,14 @@ class SplitEditorDialog(ttk.Toplevel):
     def show(self) -> Optional[SplitEditorResult]:
         self.wait_window()
         return self.result
+
+    def _parse_decimal_live(self, raw: str) -> Decimal:
+        """
+        Parseo tolerante para recálculo en vivo:
+        - "", ".", "-", "+", "-.", "+." -> 0 (input incompleto)
+        - ".5" / "-.5" -> válido
+        """
+        s = (raw or "").strip()
+        if s in {"", ".", "-", "+", "-.", "+."}:
+            return Decimal("0")
+        return parse_decimal_user_input(s, field_name="Valor de línea")

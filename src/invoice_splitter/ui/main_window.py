@@ -91,8 +91,8 @@ class MainWindow(ttk.Window):
     def __init__(self) -> None:
         super().__init__(themename="flatly")
         self.title("Invoice Splitter")
-        self.geometry("1060x760")
-        self.minsize(980, 620)
+        self.geometry("1180x760")
+        self.minsize(1120, 620)
 
         # --- 1) Asegurar excel_path (file picker si no está configurado) ---
         try:
@@ -546,6 +546,7 @@ class MainWindow(ttk.Window):
             "cc",
             "gl",
             "sub",
+            "pct_assigned",  # NUEVA
             "iva",
             "iva_amt",
             "total",
@@ -576,6 +577,7 @@ class MainWindow(ttk.Window):
             "cc": "CC",
             "gl": "GL account",
             "sub": "Subtotal assigned",
+            "pct_assigned": "%' assigned",
             "iva": "% IVA",
             "iva_amt": "IVA assigned",
             "total": "Total assigned",
@@ -592,6 +594,7 @@ class MainWindow(ttk.Window):
             "cc": 100,
             "gl": 140,
             "sub": 140,
+            "pct_assigned": 110,
             "iva": 90,
             "iva_amt": 140,
             "total": 140,
@@ -855,7 +858,7 @@ class MainWindow(ttk.Window):
         s = "" if raw is None else str(raw).strip()
         if s == "":
             return (1, "")
-        numeric_cols = {"cc", "gl", "sub", "iva", "iva_amt", "total"}
+        numeric_cols = {"cc", "gl", "sub", "pct_assigned", "iva", "iva_amt", "total"}
         if col in numeric_cols or col == "bill":
             return (0, self._to_float_safe(s))
         if col == "date":
@@ -1063,7 +1066,18 @@ class MainWindow(ttk.Window):
             self.phone_lines_block.pack(fill=X, pady=(8, 0))
 
         else:
+            # Vendor no reconocido -> tratarlo como genérico por defecto
             self.vendor_specific_frame.configure(text="Service/ concept")
+
+            # Mostrar el combo genérico con opción "Otro (personalizado)"
+            self._set_generic_values_and_keep_selection([OTRO], OTRO)
+            self.generic_block.pack(fill=X)
+
+            # Al ser OTRO, mostrar bloque de concepto/CC/GL y split
+            self.generic_custom_block.pack(fill=X, pady=(8, 0))
+            self.split_btn.pack(fill=X, pady=(10, 0))
+            self.split_status.pack(fill=X, pady=(5, 0))
+            self._update_split_status()
             return
 
         if self.generic_concept_list_var.get() == OTRO:
@@ -1287,7 +1301,7 @@ class MainWindow(ttk.Window):
 
                 lines = build_lines(invoice)
                 self.preview_lines = lines
-                self._render_preview(lines)
+                self._render_preview(lines, invoice.subtotal)
                 self.save_btn.configure(state="normal")
                 self._update_preview_summary(invoice.subtotal)
                 self._show_warnings()
@@ -1346,9 +1360,11 @@ class MainWindow(ttk.Window):
                     custom_concept = self.generic_custom_concept_var.get().strip()
                     if not custom_concept and not has_split:
                         raise ValueError("Debes escribir el concepto personalizado.")
+
                     invoice.service_concept = (
                         custom_concept or self._first_alloc_concept() or "Concepto personalizado"
                     )
+
                     if not has_split:
                         cc_raw = self.generic_cc_var.get().strip()
                         gl_raw = self.generic_gl_var.get().strip()
@@ -1358,13 +1374,15 @@ class MainWindow(ttk.Window):
                             )
                         invoice.extras["cc"] = int(cc_raw)
                         invoice.extras["gl_account"] = int(gl_raw)
+                    # ✅ Si hay split: NO tocar invoice.alloc_mode / invoice.allocations
                 else:
+                    # ✅ Si NO es OTRO: ignorar split (por seguridad)
                     invoice.alloc_mode = None
                     invoice.allocations = []
 
             lines = build_lines(invoice)
             self.preview_lines = lines
-            self._render_preview(lines)
+            self._render_preview(lines, invoice.subtotal)
             self.save_btn.configure(state="normal")
 
             # ✅ actualizar resumen para TODOS (EIKON + genéricos)
@@ -1467,25 +1485,69 @@ class MainWindow(ttk.Window):
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-    def _render_preview(self, lines: List[LineItem]) -> None:
+    def _fmt_percent(self, dec: Any) -> str:
+        """
+        Recibe 0.15 y devuelve '15.00%'. Si viene vacío, devuelve ''.
+        """
+        if dec is None or str(dec).strip() == "":
+            return ""
+        try:
+            d = dec if isinstance(dec, Decimal) else Decimal(str(dec))
+            return f"{(d * Decimal('100')):.2f}%"
+        except Exception:
+            return str(dec)
+
+    def _fmt_percent_ui(self, iva_rate) -> str:
+        """
+        Recibe 0.15 y devuelve '15.00%'. Si viene vacío, devuelve ''.
+        """
+        if iva_rate is None:
+            return ""
+        s = str(iva_rate).strip()
+        if s == "":
+            return ""
+        try:
+            d = iva_rate if isinstance(iva_rate, Decimal) else Decimal(s)
+            return f"{(d * Decimal('100')):.2f}%"
+        except Exception:
+            return s
+
+    def _render_preview(self, lines, invoice_subtotal) -> None:
         self._clear_tree()
+
+        inv_sub = self._as_decimal_safe(invoice_subtotal)
+        inv_zero = inv_sub == 0
+
         for li in lines:
             v = li.values
+            line_sub = self._as_decimal_safe(v.get("Subtotal assigned by CC"))
+
+            # % assigned (UI)
+            if inv_zero:
+                pct_assigned = ""
+            else:
+                pct = (line_sub / inv_sub) * Decimal("100")
+                pct_assigned = f"{pct:.2f}%"
+
+            iva_display = self._fmt_percent_ui(v.get("% IVA"))
+
+            # IMPORTANTÍSIMO: el orden de values debe coincidir con self._tree_cols
             self.tree.insert(
                 "",
                 END,
                 values=(
-                    str(li.table_name),
-                    str(v.get("Date", "")),
-                    str(v.get("Bill number", "")),
-                    str(v.get("Vendor", "")),
-                    str(v.get("Service/ concept", "")),
-                    str(v.get("CC", "")),
-                    str(v.get("GL account", "")),
-                    str(v.get("Subtotal assigned by CC", "")),
-                    str(v.get("% IVA", "")),
-                    str(v.get("IVA assigned by CC", "")),
-                    str(v.get("Total assigned by CC", "")),
+                    str(li.table_name),  # table
+                    str(v.get("Date", "")),  # date
+                    str(v.get("Bill number", "")),  # bill
+                    str(v.get("Vendor", "")),  # vendor
+                    str(v.get("Service/ concept", "")),  # concept
+                    str(v.get("CC", "")),  # cc
+                    str(v.get("GL account", "")),  # gl
+                    str(v.get("Subtotal assigned by CC", "")),  # sub
+                    pct_assigned,  # pct_assigned
+                    iva_display,  # iva  (en % en UI)
+                    str(v.get("IVA assigned by CC", "")),  # iva_amt
+                    str(v.get("Total assigned by CC", "")),  # total
                 ),
             )
 

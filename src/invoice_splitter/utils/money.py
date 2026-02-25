@@ -37,7 +37,15 @@ def parse_decimal_user_input(value: str, field_name: str = "El valor") -> Decima
         elif "." in s and "," not in s:
             s = s.replace(",", "")
 
-    if not re.fullmatch(r"[+-]?\d+(\.\d+)?", s):
+    # Permitir ".5" o "-.5"
+    if s.startswith("."):
+        s = "0" + s
+    elif s.startswith("-."):
+        s = s.replace("-.", "-0.", 1)
+    elif s.startswith("+."):
+        s = s.replace("+.", "+0.", 1)
+
+    if not re.fullmatch(r"[+-]?(\d+(\.\d+)?|\.\d+)", s):
         raise ValueError(f"{field_name} tiene un formato numérico inválido: '{value}'")
 
     try:

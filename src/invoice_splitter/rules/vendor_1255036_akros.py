@@ -26,6 +26,13 @@ GL2 = 7427000000
 PCT2 = Decimal("0.60")
 
 
+VENDOR_ID = 1255036
+
+
+def build_lines_for_vendor(invoice: InvoiceInput) -> List[LineItem]:
+    return build_lines_for_akros(invoice)
+
+
 def build_lines_for_akros(invoice: InvoiceInput) -> List[LineItem]:
     """
     AKROS (vendor_id=1255036) -> Akros_bills_table

@@ -9,8 +9,12 @@ TWOPLACES = Decimal("0.01")
 TOLERANCE = Decimal("0.01")
 
 
-def q2(value: Decimal) -> Decimal:
-    """Redondea a 2 decimales con HALF_UP."""
+def q2(value) -> Decimal:
+    """Redondea a 2 decimales con HALF_UP. Acepta Decimal/int/float/str."""
+    if value is None:
+        value = Decimal("0")
+    if not isinstance(value, Decimal):
+        value = Decimal(str(value))
     return value.quantize(TWOPLACES, rounding=ROUND_HALF_UP)
 
 

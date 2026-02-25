@@ -6,7 +6,15 @@ from typing import List
 from invoice_splitter.models import InvoiceInput, LineItem
 from invoice_splitter.rules.common import calc_iva_and_total, q2, validate_and_compute_allocations
 
-CLARO_ID = 1254902
+
+VENDOR_ID = 1254902
+
+
+def build_lines_for_vendor(invoice: InvoiceInput) -> List[LineItem]:
+    return build_lines_for_claro(invoice)
+
+
+# CLARO_ID = 1254902
 
 SIPTRUNK_TABLE = "Claro_siptrunk_table"
 SBC_TABLE = "Claro_SBC_table"

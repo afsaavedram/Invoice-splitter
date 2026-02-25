@@ -21,6 +21,13 @@ PCT2 = Decimal("0.40")
 DEFAULT_LINES = 10
 
 
+VENDOR_ID = 1260177
+
+
+def build_lines_for_vendor(invoice: InvoiceInput) -> List[LineItem]:
+    return build_lines_for_movistar(invoice)
+
+
 def build_lines_for_movistar(invoice: InvoiceInput) -> List[LineItem]:
     """
     MOVISTAR (vendor_id=1260177) -> Movistar_table
