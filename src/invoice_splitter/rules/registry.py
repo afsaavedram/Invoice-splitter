@@ -5,6 +5,7 @@ import pkgutil
 from typing import Callable, Dict, List, Optional
 
 from invoice_splitter.models import InvoiceInput, LineItem
+from invoice_splitter.rules.vendor_generic import build_lines_generic
 
 RuleFn = Callable[[InvoiceInput], List[LineItem]]
 
@@ -71,7 +72,8 @@ def build_lines(invoice: InvoiceInput) -> List[LineItem]:
     rules = _get_rules()
     fn = rules.get(invoice.vendor_id)
     if not fn:
-        raise ValueError(f"No hay regla implementada aún para vendor_id={invoice.vendor_id}")
+        # Fallback genérico para vendors sin regla específica
+        return build_lines_generic(invoice)
     return fn(invoice)
 
 
