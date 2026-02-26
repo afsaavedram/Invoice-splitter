@@ -4,7 +4,6 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Dict, List, Optional, Any
 
-from click import Path
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import END, LEFT, W, X
 from tkinter import messagebox
@@ -12,7 +11,6 @@ from tkinter.ttk import Treeview
 from tkinter import filedialog
 from pathlib import Path as PathlibPath
 
-from invoice_splitter.config import get_settings
 from invoice_splitter.excel.vendors import Vendor, load_vendors_from_table
 from invoice_splitter.excel.writer import ExcelWriteError, apply_transaction
 from invoice_splitter.models import InvoiceInput, LineItem, Allocation
@@ -21,6 +19,7 @@ from invoice_splitter.ui.split_editor import SplitEditorDialog
 from invoice_splitter.utils.dates import UI_DATE_FORMAT, parse_ui_date, today
 from invoice_splitter.utils.money import normalize_bill_number, parse_decimal_user_input, parse_iva
 from invoice_splitter.config import get_settings, set_excel_path_user_config
+from invoice_splitter.rules.common import calc_iva_and_total
 
 
 # -----------------------------
@@ -37,6 +36,7 @@ MOVISTAR_ID = 1260177  # OTECEL (Movistar)
 CLARO_ID = 1254902  # CONECEL / Claro
 
 OTRO = "Otro (personalizado)"
+ADD_VENDOR_OPTION = "➕ Otro (agregar vendor…)"
 
 # -----------------------------
 # Concepts
@@ -122,20 +122,28 @@ class MainWindow(ttk.Window):
         self.session_backup_path = None
 
         # --- 2) Cargar vendors desde Vendors_table ya con excel_path válido ---
-
         self.vendors: List[Vendor] = load_vendors_from_table(
             excel_path=str(self.excel_path),
             sheet_name=self.settings.vendors_sheet,
             table_name=self.settings.vendors_table,
         )
 
-        self.vendor_by_name: Dict[str, Vendor] = {v.vendor_name: v for v in self.vendors}
+        # --- Vendors: usar label único "Vendor (ID)" y soportar ADD_VENDOR_OPTION ---
+        self.vendor_labels: List[str] = [f"{v.vendor_name} ({v.vendor_id})" for v in self.vendors]
+        self.vendor_labels.append(ADD_VENDOR_OPTION)
+
+        self.vendor_by_label: Dict[str, Vendor] = {
+            f"{v.vendor_name} ({v.vendor_id})": v for v in self.vendors
+        }
+        self.vendor_by_id: Dict[int, Vendor] = {v.vendor_id: v for v in self.vendors}
 
         # Base vars
-        self.vendor_var = ttk.StringVar(value=self.vendors[0].vendor_name if self.vendors else "")
+        default_label = self.vendor_labels[0] if self.vendor_labels else ""
+        self.vendor_var = ttk.StringVar(value=default_label)
         self.bill_var = ttk.StringVar(value="")
         self.subtotal_var = ttk.StringVar(value="")
         self.iva_var = ttk.StringVar(value=str(self.settings.default_iva))
+        self.affected_invoice_var = ttk.StringVar(value="")
 
         # EIKON vars
         self.eikon_concept_var = ttk.StringVar(value=EIKON_CONCEPTS[0])
@@ -233,7 +241,7 @@ class MainWindow(ttk.Window):
         self.vendor_combo = ttk.Combobox(
             row1,
             textvariable=self.vendor_var,
-            values=[v.vendor_name for v in self.vendors],
+            values=self.vendor_labels,
             state="readonly",
             width=45,
         )
@@ -248,7 +256,7 @@ class MainWindow(ttk.Window):
 
         row2 = ttk.Frame(form)
         row2.grid(row=1, column=0, sticky="ew", pady=(0, pad))
-        ttk.Label(row2, text="Número de factura (9 dígitos):").pack(side=LEFT, padx=(0, 8))
+        ttk.Label(row2, text="Número de FC/NC (9 dígitos):").pack(side=LEFT, padx=(0, 8))
         ttk.Entry(row2, textvariable=self.bill_var, width=20).pack(side=LEFT)
 
         row3 = ttk.Frame(form)
@@ -257,6 +265,19 @@ class MainWindow(ttk.Window):
 
         self.subtotal_entry = ttk.Entry(row3, textvariable=self.subtotal_var, width=20)
         self.subtotal_entry.pack(side=LEFT, padx=(0, 25))
+
+        self.affected_block = ttk.Frame(form)
+        self.affected_block.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+        # ajusta row si lo prefieres
+        # Si ya usas row2/row3, ubícalo debajo del subtotal o del bill.
+
+        ttk.Label(self.affected_block, text="Factura afectada (solo NC, 9 dígitos):").pack(
+            side=LEFT, padx=(0, 8)
+        )
+        ttk.Entry(self.affected_block, textvariable=self.affected_invoice_var, width=20).pack(
+            side=LEFT
+        )
+        self.affected_block.grid_remove()
 
         # ✅ Al salir del subtotal: normaliza CLARO->SBC y limpia preview
         self.subtotal_entry.bind("<FocusOut>", self._on_subtotal_focus_out)
@@ -270,7 +291,7 @@ class MainWindow(ttk.Window):
 
         # ---------- Service/Concept frame ----------
         self.vendor_specific_frame = ttk.Labelframe(form, text="Service/ concept", padding=pad)
-        self.vendor_specific_frame.grid(row=3, column=0, sticky="ew", pady=(0, pad))
+        self.vendor_specific_frame.grid(row=4, column=0, sticky="ew", pady=(0, pad))
         self.vendor_specific_frame.grid_columnconfigure(0, weight=1)
 
         # EIKON block
@@ -461,12 +482,12 @@ class MainWindow(ttk.Window):
             justify="left",
         )
         # debajo del vendor_specific_frame (row 3) => row 4
-        self.warnings_label.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        self.warnings_label.grid(row=5, column=0, sticky="ew", pady=(0, 8))
         self.warnings_label.grid_remove()
 
         # ---------- Preview wrapper ----------
         preview_wrapper = ttk.Frame(container)
-        preview_wrapper.grid(row=2, column=0, sticky="nsew")
+        preview_wrapper.grid(row=6, column=0, sticky="nsew")
         preview_wrapper.grid_rowconfigure(1, weight=1)
         preview_wrapper.grid_columnconfigure(0, weight=1)
 
@@ -614,7 +635,7 @@ class MainWindow(ttk.Window):
 
         # ---------- Buttons frame ----------
         buttons = ttk.Frame(container)
-        buttons.grid(row=3, column=0, sticky="ew", pady=(pad, 0))
+        buttons.grid(row=7, column=0, sticky="ew", pady=(pad, 0))
         buttons.grid_columnconfigure(0, weight=1)
 
         ttk.Button(
@@ -886,9 +907,9 @@ class MainWindow(ttk.Window):
         except ValueError:
             return None
 
-    # ---------------- Vendor helpers ----------------
+    # # ---------------- Vendor helpers ----------------
     def _selected_vendor(self) -> Optional[Vendor]:
-        return self.vendor_by_name.get(self.vendor_var.get().strip())
+        return self.vendor_by_label.get(self.vendor_var.get().strip())
 
     def _reset_split(self) -> None:
         self.custom_alloc_mode = None
@@ -944,6 +965,13 @@ class MainWindow(ttk.Window):
 
     # ---------------- Vendor events ----------------
     def _on_vendor_changed(self, _event=None) -> None:
+        sel = (self.vendor_var.get() or "").strip()
+
+        # Si el usuario selecciona "➕ Otro...", abrimos diálogo para agregar vendor
+        if sel == ADD_VENDOR_OPTION:
+            self._open_add_vendor_dialog()
+            return
+
         # 1) limpiar preview/resumen del vendor anterior
         self._clear_preview_state(clear_warnings=True)
 
@@ -953,6 +981,135 @@ class MainWindow(ttk.Window):
 
         # 3) normalizaciones propias (si aplica)
         self._normalize_prices_to_subtotal_sign_soft()
+
+    def _open_add_vendor_dialog(self) -> None:
+        dialog = ttk.Toplevel(self)
+        dialog.title("Agregar vendor")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+        dialog.transient(self)
+
+        pad = 12
+        frame = ttk.Frame(dialog, padding=pad)
+        frame.grid(row=0, column=0, sticky="nsew")
+
+        vid_var = ttk.StringVar(value="")
+        vname_var = ttk.StringVar(value="")
+
+        warning_var = ttk.StringVar(value="")
+
+        ttk.Label(frame, text="Vendor ID (7 dígitos):").grid(row=0, column=0, sticky="w")
+        vid_entry = ttk.Entry(frame, textvariable=vid_var, width=20)
+        vid_entry.grid(row=0, column=1, padx=(8, 0))
+
+        ttk.Label(frame, text="Vendor name:").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        vname_entry = ttk.Entry(frame, textvariable=vname_var, width=40)
+        vname_entry.grid(row=1, column=1, padx=(8, 0), pady=(8, 0))
+
+        warn_label = ttk.Label(
+            frame, textvariable=warning_var, bootstyle="warning", wraplength=420, justify="left"
+        )
+        warn_label.grid(row=2, column=0, columnspan=2, sticky="we", pady=(10, 0))
+        warn_label.grid_remove()
+
+        def show_warn(msg: str) -> None:
+            warning_var.set("⚠️ " + msg)
+            warn_label.grid()
+
+        def clear_warn() -> None:
+            warning_var.set("")
+            warn_label.grid_remove()
+
+        def on_cancel() -> None:
+            dialog.destroy()
+            # volver al primer vendor válido
+            if self.vendor_labels:
+                self.vendor_var.set(self.vendor_labels[0])
+            self._apply_vendor_defaults_and_visibility()
+
+        def on_save_vendor() -> None:
+            clear_warn()
+            raw_id = (vid_var.get() or "").strip()
+            raw_name = (vname_var.get() or "").strip()
+
+            if not raw_id.isdigit():
+                messagebox.showerror("Vendor", "Vendor ID debe ser numérico.")
+                return
+
+            vendor_id = int(raw_id)
+
+            # Bloquear si ID ya existe
+            if vendor_id in self.vendor_by_id:
+                messagebox.showerror(
+                    "Vendor", f"El Vendor ID {vendor_id} ya existe. No se puede duplicar."
+                )
+                return
+
+            # Soft warning por longitud != 7
+            if len(raw_id) != 7:
+                show_warn(
+                    "El ID supera la longitud estándar (7 dígitos). Se guardará de todas formas."
+                )
+
+            # Soft warning si el nombre ya existe (no bloquea)
+            existing_names = {v.vendor_name.strip().lower() for v in self.vendors}
+            if raw_name.strip().lower() in existing_names:
+                show_warn("Nombre de vendor ya utilizado. Se guardará de todas formas.")
+
+            if not raw_name:
+                messagebox.showerror("Vendor", "Vendor name no puede estar vacío.")
+                return
+
+            try:
+                from invoice_splitter.excel.vendors import add_vendor_to_table
+
+                add_vendor_to_table(
+                    excel_path=self.excel_path,
+                    sheet_name=self.settings.vendors_sheet,
+                    table_name=self.settings.vendors_table,
+                    vendor_id=vendor_id,
+                    vendor_name=raw_name,
+                    backup_dir=self.backup_dir,
+                )
+            except Exception as e:
+                messagebox.showerror("Vendor", f"No se pudo guardar el vendor en Excel:\n{e}")
+                return
+
+            # Recargar vendors desde Excel
+            self.vendors = load_vendors_from_table(
+                excel_path=str(self.excel_path),
+                sheet_name=self.settings.vendors_sheet,
+                table_name=self.settings.vendors_table,
+            )
+
+            # Recalcular labels y mapas
+            self.vendor_labels = [f"{v.vendor_name} ({v.vendor_id})" for v in self.vendors]
+            self.vendor_labels.append(ADD_VENDOR_OPTION)
+            self.vendor_by_label = {f"{v.vendor_name} ({v.vendor_id})": v for v in self.vendors}
+            self.vendor_by_id = {v.vendor_id: v for v in self.vendors}
+
+            # Refrescar el combo y seleccionar el nuevo vendor
+            self.vendor_combo.configure(values=self.vendor_labels)
+            self.vendor_var.set(f"{raw_name} ({vendor_id})")
+
+            dialog.destroy()
+
+            # refrescar UI
+            self._clear_preview_state(clear_warnings=True)
+            self._reset_split()
+            self._apply_vendor_defaults_and_visibility()
+
+        btns = ttk.Frame(frame)
+        btns.grid(row=3, column=0, columnspan=2, sticky="e", pady=(12, 0))
+
+        ttk.Button(btns, text="Guardar", bootstyle="primary", command=on_save_vendor).pack(
+            side="right"
+        )
+        ttk.Button(btns, text="Cancelar", bootstyle="secondary", command=on_cancel).pack(
+            side="right", padx=(0, 10)
+        )
+
+        vid_entry.focus_set()
 
     def _on_eikon_concept_changed(self, _event=None) -> None:
         self._clear_preview_state(clear_warnings=True)
@@ -1182,6 +1339,23 @@ class MainWindow(ttk.Window):
         self._normalize_prices_to_subtotal_sign_soft()
         self._clear_preview_state(clear_warnings=True)
 
+    def _toggle_affected_invoice_visibility(self) -> None:
+        raw = (self.subtotal_var.get() or "").strip()
+        if not raw:
+            self.affected_invoice_var.set("")
+            self.affected_block.grid_remove()
+            return
+        try:
+            subtotal = parse_decimal_user_input(raw, field_name="Subtotal")
+        except Exception:
+            # si está inválido, no molestamos aquí
+            return
+        if subtotal < 0:
+            self.affected_block.grid()  # mostrar
+        else:
+            self.affected_invoice_var.set("")
+            self.affected_block.grid_remove()
+
     def _on_subtotal_focus_out(self, _event=None) -> None:
         """
         Al salir del subtotal:
@@ -1190,6 +1364,7 @@ class MainWindow(ttk.Window):
         """
         self._normalize_prices_to_subtotal_sign_soft()
         self._clear_preview_state(clear_warnings=True)
+        self._toggle_affected_invoice_visibility()
 
     def _on_iva_focus_out(self, _event=None) -> None:
         """
@@ -1430,6 +1605,55 @@ class MainWindow(ttk.Window):
             table_to_rows: Dict[str, List[Dict[str, object]]] = {}
             for li in self.preview_lines:
                 table_to_rows.setdefault(li.table_name, []).append(li.values)
+
+            # ---------------------------
+            # A4) General registry row (siempre, sin split)
+            # ---------------------------
+            # vendor ya lo tienes arriba en on_save() (self._selected_vendor())
+            # bill ya lo tienes arriba en on_save() (normalize_bill_number(...))
+
+            subtotal = parse_decimal_user_input(self.subtotal_var.get(), field_name="Subtotal")
+            iva_rate = parse_iva(self.iva_var.get())  # se guarda como 0.15 (decimal)
+
+            type_fc_nc = "NC" if subtotal < 0 else "FC"  # subtotal=0 -> FC (como definiste)
+
+            affected = ""
+            if type_fc_nc == "NC":
+                affected = normalize_bill_number(
+                    self.affected_invoice_var.get(), field_name="Affected invoice"
+                )
+
+            # Service/ concept: "Varios" si hay >1 concepto distinto entre líneas
+            concepts = set()
+            for li in self.preview_lines:
+                c = str(li.values.get("Service/ concept", "")).strip()
+                if c:
+                    concepts.add(c)
+
+            if len(concepts) > 1:
+                general_concept = "Varios"
+            else:
+                general_concept = next(iter(concepts), self._current_general_concept())
+
+            iva_amt, total_amt = calc_iva_and_total(subtotal, iva_rate)
+
+            invoice_date = parse_ui_date(self.date_entry.entry.get().strip())
+
+            general_row = {
+                "Date": invoice_date,
+                "Type": type_fc_nc,
+                "FC/NC number": bill,
+                "Affected invoice": affected,
+                "ID": vendor.vendor_id,
+                "Vendor": vendor.vendor_name,
+                "Service/ concept": general_concept,
+                "Subtotal": subtotal,
+                "% IVA": iva_rate,
+                "IVA": iva_amt,
+                "Total": total_amt,
+            }
+
+            table_to_rows.setdefault("General_registry_table", []).append(general_row)
 
             backup_path, deleted_by_table, backup_created = apply_transaction(
                 excel_path=self.excel_path,

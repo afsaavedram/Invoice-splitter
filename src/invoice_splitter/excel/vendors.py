@@ -7,6 +7,15 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import range_boundaries
 
 
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.cell import range_boundaries
+
+from invoice_splitter.excel.writer import backup_excel, prune_backups, ExcelWriteError
+
+
 @dataclass(frozen=True)
 class Vendor:
     """
@@ -14,6 +23,7 @@ class Vendor:
     vendor_id se guarda como int si es posible (para comparaciones),
     vendor_name como string (tal cual aparece en Excel).
     """
+
     vendor_id: int
     vendor_name: str
 
@@ -102,9 +112,7 @@ def load_vendors_from_table(
         try:
             vendor_id = int(str(raw_id).strip())
         except ValueError as e:
-            raise ValueError(
-                f"ID de vendor inválido en {table_name} fila {row}: {raw_id}"
-            ) from e
+            raise ValueError(f"ID de vendor inválido en {table_name} fila {row}: {raw_id}") from e
 
         vendor_name = str(raw_vendor).strip()
         vendors.append(Vendor(vendor_id=vendor_id, vendor_name=vendor_name))
@@ -114,6 +122,87 @@ def load_vendors_from_table(
     # Ordenamos alfabéticamente para el combobox
     vendors.sort(key=lambda v: v.vendor_name.lower())
     return vendors
+
+
+def add_vendor_to_table(
+    *,
+    excel_path: Path,
+    sheet_name: str,
+    table_name: str,
+    vendor_id: int,
+    vendor_name: str,
+    backup_dir: Path,
+    keep_last_n: int = 30,
+    keep_days: int = 30,
+) -> None:
+    """
+    Inserta un vendor nuevo en Vendors_table (columnas ID y Vendor).
+    - Bloquea si el ID ya existe (la UI ya lo valida, aquí lo validamos de nuevo por seguridad).
+    - Hace backup por sesión simple (crea uno nuevo por cada llamada).
+    """
+    # Backup (simple)
+    backup_excel(excel_path, backup_dir)
+    prune_backups(backup_dir, keep_last_n=keep_last_n, keep_days=keep_days)
+
+    try:
+        wb = load_workbook(excel_path)
+    except PermissionError as e:
+        raise ExcelWriteError(
+            "No se puede abrir el Excel (probablemente está abierto o bloqueado por OneDrive/SharePoint)."
+        ) from e
+
+    try:
+        if sheet_name not in wb.sheetnames:
+            raise ExcelWriteError(f"No existe la hoja '{sheet_name}'.")
+
+        ws = wb[sheet_name]
+        if table_name not in ws.tables:
+            raise ExcelWriteError(f"No existe la tabla '{table_name}' en la hoja '{sheet_name}'.")
+
+        table = ws.tables[table_name]
+        min_col, min_row, max_col, max_row = range_boundaries(table.ref)
+
+        # headers
+        headers = [ws.cell(row=min_row, column=c).value for c in range(min_col, max_col + 1)]
+        if "ID" not in headers or "Vendor" not in headers:
+            raise ExcelWriteError(
+                f"Encabezados inválidos en {table_name}. Se requieren columnas 'ID' y 'Vendor'. "
+                f"Encontrados: {headers}"
+            )
+
+        id_idx = headers.index("ID")
+        vendor_idx = headers.index("Vendor")
+
+        id_col = min_col + id_idx
+        vendor_col = min_col + vendor_idx
+
+        # Validación de ID duplicado
+        for r in range(min_row + 1, max_row + 1):
+            cell_id = ws.cell(row=r, column=id_col).value
+            if cell_id is None:
+                continue
+            try:
+                if int(str(cell_id).strip()) == vendor_id:
+                    raise ExcelWriteError(f"El Vendor ID {vendor_id} ya existe en {table_name}.")
+            except ValueError:
+                # si hay basura en Excel, lo ignoramos aquí
+                continue
+
+        # Insertar nueva fila al final de la tabla
+        new_row = max_row + 1
+        ws.cell(row=new_row, column=id_col, value=vendor_id)
+        ws.cell(row=new_row, column=vendor_col, value=vendor_name)
+
+        # Expandir ref
+        start_cell = f"{get_column_letter(min_col)}{min_row}"
+        end_cell = f"{get_column_letter(max_col)}{new_row}"
+        ws.tables[table_name].ref = f"{start_cell}:{end_cell}"
+
+        # Guardar
+        wb.save(excel_path)
+
+    finally:
+        wb.close()
 
 
 # Pequeña prueba manual: permite ejecutar este archivo directamente

@@ -91,28 +91,21 @@ BASE_HEADERS = [
     "% IVA",
     "IVA assigned by CC",
     "Total assigned by CC",
-]  # Coinciden con lo que ya escribe el writer y la UI [1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
-
+]
 EXTRA_HEADERS_BY_TABLE = {
-    "Cirion_table": [
-        "Bandwidth (MBPS)"
-    ],  # [1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
+    "Cirion_table": ["Bandwidth (MBPS)"],
     "Claro_siptrunk_table": [
         "Bandwidth (MBPS)",
         "Troncal SIP (channels)",
-    ],  # [6](https://stackoverflow.com/questions/63182578/renaming-excel-sheets-name-exceeds-31-characters-error)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
+    ],
     "Claro_SBC_table": [
         "Siptrunk (MBPS)",
         "Licences (Quantity)",
         "Siptrunk price",
         "Licences price",
-    ],  # [6](https://stackoverflow.com/questions/63182578/renaming-excel-sheets-name-exceeds-31-characters-error)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
-    "Movistar_table": [
-        "Phone lines quantity"
-    ],  # [6](https://stackoverflow.com/questions/63182578/renaming-excel-sheets-name-exceeds-31-characters-error)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
-    "Claro_mobile_table": [
-        "Phone lines quantity"
-    ],  # [6](https://stackoverflow.com/questions/63182578/renaming-excel-sheets-name-exceeds-31-characters-error)[1](https://support.microsoft.com/en-us/office/excel-doesn-t-fully-support-some-special-characters-in-the-filename-or-folder-path-20728217-f08a-4d63-a741-821a14cec380)
+    ],
+    "Movistar_table": ["Phone lines quantity"],
+    "Claro_mobile_table": ["Phone lines quantity"],
 }
 
 
@@ -253,8 +246,6 @@ def ensure_table_exists(
             ws.cell(row=1, column=idx, value=h)
 
     # Crear la tabla con ref A1:<lastcol>2 (Opción A)
-    from openpyxl.utils import get_column_letter
-
     last_col_letter = get_column_letter(len(headers))
     ref = f"A1:{last_col_letter}2"  # header + 1 fila vacía (sin dummy data)
     table = Table(
@@ -316,10 +307,25 @@ def _set_cell_formats(ws, row: int, col_map: Dict[str, int]) -> None:
     if "Bill number" in col_map:
         ws.cell(row=row, column=col_map["Bill number"]).number_format = "@"
 
-    for key in ["Subtotal assigned by CC", "% IVA", "IVA assigned by CC", "Total assigned by CC"]:
+    # Texto: Bill number / FC/NC number / Affected invoice
+    for key in ["Bill number", "FC/NC number", "Affected invoice"]:
+        if key in col_map:
+            ws.cell(row=row, column=col_map[key]).number_format = "@"
+
+    # Números con 2 decimales (split + general registry)
+    for key in [
+        "Subtotal assigned by CC",
+        "% IVA",
+        "IVA assigned by CC",
+        "Total assigned by CC",
+        "Subtotal",
+        "IVA",
+        "Total",
+    ]:
         if key in col_map:
             ws.cell(row=row, column=col_map[key]).number_format = "#,##0.00"
 
+    # Enteros
     for key in ["CC", "GL account"]:
         if key in col_map:
             ws.cell(row=row, column=col_map[key]).number_format = "0"
@@ -328,7 +334,13 @@ def _set_cell_formats(ws, row: int, col_map: Dict[str, int]) -> None:
 # -----------------------
 # Delete + Append
 # -----------------------
-def delete_duplicates_in_table(ws, info: TableInfo, vendor_id: int, bill_number: str) -> int:
+def delete_duplicates_in_table(
+    ws,
+    info: TableInfo,
+    vendor_id: int,
+    bill_number: str,
+    bill_col_name: str = "Bill number",
+) -> int:
     """
     Borra filas dentro de la tabla donde:
       (ID == vendor_id) y (Bill number == bill_number)
@@ -338,13 +350,20 @@ def delete_duplicates_in_table(ws, info: TableInfo, vendor_id: int, bill_number:
     """
     col_map = _header_to_col_index(info)
 
-    if "ID" not in col_map or "Bill number" not in col_map:
+    if "ID" not in col_map or bill_col_name not in col_map:
         raise ExcelWriteError(
-            f"La tabla {info.table_name} debe tener columnas 'ID' y 'Bill number' para sobrescritura."
+            f"La tabla {info.table_name} debe tener columnas 'ID' y '{bill_col_name}' para sobrescritura."
         )
-
     id_col = col_map["ID"]
-    bill_col = col_map["Bill number"]
+    bill_col = col_map[bill_col_name]
+
+    logger.info(
+        "DEDUPE | tabla=%s | usando clave=(ID + %s) | vendor_id=%s | key_value=%s",
+        info.table_name,
+        bill_col_name,
+        vendor_id,
+        bill_number,
+    )
 
     rows_to_delete: List[int] = []
     for r in range(info.min_row + 1, info.max_row + 1):
@@ -475,12 +494,10 @@ def apply_transaction(
     deleted_by_table: Dict[str, int] = {}
 
     logger.info(
-        "TRANSACCION INICIO | excel=%s | vendor_id=%s | bill=%s | backup=%s | backup_creado=%s | tablas=%s",
+        "TRANSACCION INICIO | excel=%s | vendor_id=%s | key_value=%s | tablas=%s",
         excel_path,
         vendor_id,
         bill_number,
-        backup_path,
-        backup_created,
         list(table_to_rows.keys()),
     )
 
@@ -488,18 +505,24 @@ def apply_transaction(
         for table_name, rows in table_to_rows.items():
             ws, info = find_table(wb, table_name)
 
-            deleted = delete_duplicates_in_table(ws, info, vendor_id, bill_number)
+            bill_col = "FC/NC number" if table_name == "General_registry_table" else "Bill number"
+
+            deleted = delete_duplicates_in_table(
+                ws, info, vendor_id, bill_number, bill_col_name=bill_col
+            )
+
             deleted_by_table[table_name] = deleted
 
-            # refrescar info después de borrar (rango pudo cambiar)
+            # refrescar info después de borrar
             ws, info = find_table(wb, table_name)
             append_rows_to_table(ws, info, rows)
 
             logger.info(
-                "TABLA ACTUALIZADA | tabla=%s | borradas=%s | insertadas=%s",
+                "TABLA ACTUALIZADA | tabla=%s | borradas=%s | insertadas=%s | clave=(ID + %s)",
                 table_name,
                 deleted,
                 len(rows),
+                bill_col,
             )
 
         try:
