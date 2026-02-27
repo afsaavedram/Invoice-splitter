@@ -110,6 +110,31 @@ EXTRA_HEADERS_BY_TABLE = {
 
 
 def get_table_headers(table_name: str) -> list[str]:
+
+    # Tablas de configuración / catálogo (Excel como fuente de verdad)
+    if table_name == "Vendor_concepts_table":
+        return ["Vendor ID", "Concept", "Is_default", "Active", "Sort_order"]
+
+    if table_name == "Vendor_services_table":
+        # Base para vendors complejos (Claro/Binaria/etc.). La iremos ampliando en Fase D.
+        return ["Vendor ID", "Service type", "Table name", "Has_split", "Extra fields"]
+
+    if table_name == "General_registry_table":
+        return [
+            "Date",
+            "Type",
+            "FC/NC number",
+            "Affected invoice",
+            "ID",
+            "Vendor",
+            "Service/ concept",
+            "Subtotal",
+            "% IVA",
+            "IVA",
+            "Total",
+        ]
+
+    # Tablas “normales” (split)
     return BASE_HEADERS + EXTRA_HEADERS_BY_TABLE.get(table_name, [])
 
 
@@ -186,6 +211,14 @@ def open_workbook_safe(excel_path: Path):
         ) from e
 
 
+DEFAULT_SHEET_BY_TABLE = {
+    "Vendor_concepts_table": "Config",
+    "Vendor_services_table": "Config",
+    "General_registry_table": "General registry",
+    "Vendors_table": "Vendors",
+}
+
+
 def find_table(wb, table_name: str) -> Tuple[Any, TableInfo]:
     """Busca una Excel Table por nombre a través de todas las hojas.
     Si no existe, la crea (sheet==table por default).
@@ -209,7 +242,8 @@ def find_table(wb, table_name: str) -> Tuple[Any, TableInfo]:
             )
 
     # Si no se encontró, crear hoja + tabla automáticamente (Fase 1)
-    ws, info = ensure_table_exists(wb, table_name, sheet_name=table_name)
+    preferred_sheet = DEFAULT_SHEET_BY_TABLE.get(table_name, table_name)
+    ws, info = ensure_table_exists(wb, table_name, sheet_name=preferred_sheet)
     logger.info("TABLA CREADA AUTOMATICAMENTE tabla=%s hoja=%s", table_name, info.sheet_name)
     return ws, info
 

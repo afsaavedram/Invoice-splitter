@@ -20,6 +20,7 @@ from invoice_splitter.utils.dates import UI_DATE_FORMAT, parse_ui_date, today
 from invoice_splitter.utils.money import normalize_bill_number, parse_decimal_user_input, parse_iva
 from invoice_splitter.config import get_settings, set_excel_path_user_config
 from invoice_splitter.rules.common import calc_iva_and_total
+from invoice_splitter.excel.concepts import load_vendor_concepts, add_concepts_for_vendor
 
 
 # -----------------------------
@@ -136,6 +137,16 @@ class MainWindow(ttk.Window):
             f"{v.vendor_name} ({v.vendor_id})": v for v in self.vendors
         }
         self.vendor_by_id: Dict[int, Vendor] = {v.vendor_id: v for v in self.vendors}
+
+        # Catálogo de conceptos por vendor (desde Excel)
+        self.vendor_concepts: Dict[int, List[str]] = {}
+        try:
+            raw = load_vendor_concepts(excel_path=self.excel_path)
+            # raw: Dict[int, List[VendorConcept]] -> quedarnos solo con strings
+            self.vendor_concepts = {vid: [c.concept for c in lst] for vid, lst in raw.items()}
+        except Exception:
+            # No bloquea la app: si no existe la tabla, se creará cuando guardemos conceptos
+            self.vendor_concepts = {}
 
         # Base vars
         default_label = self.vendor_labels[0] if self.vendor_labels else ""
@@ -669,6 +680,55 @@ class MainWindow(ttk.Window):
         )
         self.warnings_var.set(text)
         self.warnings_label.grid()
+
+    def _refresh_vendor_concepts_cache(self) -> None:
+        """Recarga el catálogo de conceptos desde el Excel y actualiza self.vendor_concepts."""
+        raw = load_vendor_concepts(excel_path=self.excel_path)
+        self.vendor_concepts = {vid: [c.concept for c in lst] for vid, lst in raw.items()}
+
+    def _maybe_save_new_concepts_from_split(self, vendor: Vendor) -> None:
+        """
+        Detecta conceptos nuevos en self.custom_allocations (split) y ofrece guardarlos para el vendor.
+        Solo aplica si hay split y hay conceptos nuevos.
+        """
+        if not (self.custom_alloc_mode and self.custom_allocations):
+            return
+
+        # conceptos usados en split (allocations)
+        used = set()
+        for a in self.custom_allocations:
+            c = str(a.concept or "").strip()
+            if c and c.lower() != "varios":
+                used.add(c)
+
+        if not used:
+            return
+
+        existing = set(x.lower() for x in self.vendor_concepts.get(vendor.vendor_id, []))
+        new_concepts = [c for c in sorted(used) if c.lower() not in existing and c != OTRO]
+
+        if not new_concepts:
+            return
+
+        save = messagebox.askyesno(
+            "Guardar conceptos",
+            "Se detectaron conceptos nuevos para este vendor:\n\n"
+            + "\n".join([f"- {c}" for c in new_concepts])
+            + "\n\n¿Deseas guardarlos para usarlos en el futuro?",
+        )
+        if not save:
+            return
+
+        # Guardar en Excel
+        add_concepts_for_vendor(
+            excel_path=self.excel_path,
+            backup_dir=self.backup_dir,
+            vendor_id=vendor.vendor_id,
+            concepts_to_add=new_concepts,
+        )
+
+        # Recargar cache local
+        self._refresh_vendor_concepts_cache()
 
     def _soft_int_set(
         self,
@@ -1227,7 +1287,15 @@ class MainWindow(ttk.Window):
             self.vendor_specific_frame.configure(text="Service/ concept")
 
             # Mostrar el combo genérico con opción "Otro (personalizado)"
-            self._set_generic_values_and_keep_selection([OTRO], OTRO)
+
+            concepts = self.vendor_concepts.get(vendor.vendor_id, [])
+            values = concepts[:]  # copia
+            if OTRO not in values:
+                values.append(OTRO)
+
+            default_value = concepts[0] if concepts else OTRO
+            self._set_generic_values_and_keep_selection(values, default_value)
+
             self.generic_block.pack(fill=X)
 
             # Al ser OTRO, mostrar bloque de concepto/CC/GL y split
@@ -1269,6 +1337,14 @@ class MainWindow(ttk.Window):
             self.custom_alloc_mode = res.mode
             self.custom_allocations = res.allocations
             self._update_split_status()
+            # ✅ NUEVO: ofrecer guardar conceptos nuevos (desde split) para cualquier vendor
+            vendor = self._selected_vendor()
+            if vendor:
+                try:
+                    self._maybe_save_new_concepts_from_split(vendor)
+                except Exception as e:
+                    self._add_warning(f"No se pudieron guardar conceptos nuevos: {e}")
+                    self._show_warnings()
 
             try:
                 self.on_preview()
@@ -1476,6 +1552,7 @@ class MainWindow(ttk.Window):
 
                 lines = build_lines(invoice)
                 self.preview_lines = lines
+
                 self._render_preview(lines, invoice.subtotal)
                 self.save_btn.configure(state="normal")
                 self._update_preview_summary(invoice.subtotal)
